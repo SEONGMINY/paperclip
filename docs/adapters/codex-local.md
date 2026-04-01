@@ -15,6 +15,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `sessionStrategy` | string | No | How to handle saved sessions: `resume` (default), `fresh`, or `fork` |
 | `model` | string | No | Model to use |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
@@ -25,6 +26,12 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 ## Session Persistence
 
 Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
+
+Set `sessionStrategy` to control how that saved state is used:
+
+- `resume` reuses the saved Codex session when the current `cwd` still matches.
+- `fresh` always starts a new Codex session and ignores saved session state.
+- `fork` starts a new Codex session but prepends a Paperclip handoff note describing the parent session lineage, so the new run can branch from the prior context without resuming hidden runtime state.
 
 ## Skills Injection
 

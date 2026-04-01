@@ -37,16 +37,22 @@ describe("adapter session codecs", () => {
     const parsed = codexSessionCodec.deserialize({
       sessionId: "codex-session-1",
       cwd: "/tmp/codex",
+      parentSessionId: "codex-session-parent",
+      sessionStrategy: "fork",
     });
     expect(parsed).toEqual({
       sessionId: "codex-session-1",
       cwd: "/tmp/codex",
+      parentSessionId: "codex-session-parent",
+      sessionStrategy: "fork",
     });
 
     const serialized = codexSessionCodec.serialize(parsed);
     expect(serialized).toEqual({
       sessionId: "codex-session-1",
       cwd: "/tmp/codex",
+      parentSessionId: "codex-session-parent",
+      sessionStrategy: "fork",
     });
     expect(codexSessionCodec.getDisplayId?.(serialized ?? null)).toBe("codex-session-1");
   });

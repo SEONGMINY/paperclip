@@ -27,6 +27,10 @@ export function CodexLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   const bypassEnabled =
     config.dangerouslyBypassApprovalsAndSandbox === true || config.dangerouslyBypassSandbox === true;
+  const sessionStrategy =
+    isCreate
+      ? values!.sessionStrategy ?? "resume"
+      : eff("adapterConfig", "sessionStrategy", String(config.sessionStrategy ?? "resume"));
 
   return (
     <>
@@ -88,6 +92,21 @@ export function CodexLocalConfigFields({
             : mark("adapterConfig", "search", v)
         }
       />
+      <Field label="Session strategy" hint={help.sessionStrategy}>
+        <select
+          value={sessionStrategy}
+          onChange={(e) =>
+            isCreate
+              ? set!({ sessionStrategy: e.target.value })
+              : mark("adapterConfig", "sessionStrategy", e.target.value)
+          }
+          className={inputClass}
+        >
+          <option value="resume">Resume</option>
+          <option value="fresh">Fresh</option>
+          <option value="fork">Fork</option>
+        </select>
+      </Field>
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
         values={values}

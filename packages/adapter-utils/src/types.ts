@@ -330,6 +330,7 @@ export interface CreateConfigValues {
   adapterType: string;
   cwd: string;
   instructionsFilePath?: string;
+  sessionStrategy?: string;
   promptTemplate: string;
   model: string;
   thinkingEffort: string;

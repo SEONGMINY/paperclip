@@ -69,6 +69,44 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
+type CodexSessionStrategy = "resume" | "fresh" | "fork";
+
+function resolveCodexSessionStrategy(value: unknown): CodexSessionStrategy {
+  const normalized = asString(value, "resume").trim().toLowerCase();
+  if (normalized === "fresh" || normalized === "fork") return normalized;
+  return "resume";
+}
+
+function buildCodexSessionStrategyNote(strategy: CodexSessionStrategy): string {
+  if (strategy === "fresh") {
+    return "Session strategy: fresh (always start a new Codex session and ignore saved session state).";
+  }
+  if (strategy === "fork") {
+    return "Session strategy: fork (start a new Codex session and prepend parent-session handoff context when available).";
+  }
+  return "Session strategy: resume (reuse the saved Codex session when it matches the current cwd).";
+}
+
+function buildForkSessionHandoffMarkdown(
+  parentSessionId: string,
+  currentCwd: string,
+  parentCwd: string,
+): string {
+  const lines = [
+    "## Session fork",
+    "Start a new Codex session for this run instead of resuming the saved session.",
+    `- Parent Codex session: \`${parentSessionId}\``,
+  ];
+  if (parentCwd) {
+    lines.push(`- Parent workspace cwd: \`${parentCwd}\``);
+  }
+  if (currentCwd) {
+    lines.push(`- Current workspace cwd: \`${currentCwd}\``);
+  }
+  lines.push("- Treat the parent session as prior context only; do not assume hidden runtime state carries over.");
+  return lines.join("\n");
+}
+
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
     pathExists(path.join(candidate, "pnpm-workspace.yaml")),
@@ -393,6 +431,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  const sessionStrategy = resolveCodexSessionStrategy(config.sessionStrategy);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -405,11 +444,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  const shouldResumeSession = sessionStrategy === "resume" && canResumeSession;
+  const sessionId = shouldResumeSession ? runtimeSessionId : null;
+  const forkParentSessionId = sessionStrategy === "fork" && runtimeSessionId.length > 0
+    ? runtimeSessionId
+    : null;
+  if (runtimeSessionId && sessionStrategy === "resume" && !canResumeSession) {
     await onLog(
       "stdout",
       `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+    );
+  }
+  if (runtimeSessionId && sessionStrategy === "fresh") {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex session strategy is "fresh"; starting a new session instead of resuming "${runtimeSessionId}".\n`,
+    );
+  }
+  if (runtimeSessionId && sessionStrategy === "fork") {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex session strategy is "fork"; starting a new session with handoff context from "${runtimeSessionId}".\n`,
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -435,20 +490,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const repoAgentsNote =
     "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
   const commandNotes = (() => {
+    const notes = [buildCodexSessionStrategyNote(sessionStrategy)];
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      notes.push(repoAgentsNote);
+      return notes;
     }
     if (instructionsPrefix.length > 0) {
-      return [
+      notes.push(
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
-      ];
+      );
+      return notes;
     }
-    return [
+    notes.push(
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
-    ];
+    );
+    return notes;
   })();
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
@@ -465,7 +524,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const configuredSessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const forkSessionHandoffNote = forkParentSessionId
+    ? buildForkSessionHandoffMarkdown(forkParentSessionId, cwd, runtimeSessionCwd)
+    : "";
+  const sessionHandoffNote = joinPromptSections([
+    forkSessionHandoffNote,
+    configuredSessionHandoffNote,
+  ]);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
@@ -561,6 +627,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(forkParentSessionId ? { parentSessionId: forkParentSessionId } : {}),
+        ...(sessionStrategy !== "resume" ? { sessionStrategy } : {}),
       } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
